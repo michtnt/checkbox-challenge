@@ -489,6 +489,10 @@ export const NodeEditor: React.FC<NodeEditorProps> = ({
     node.data as unknown as WorkflowNodeData
   );
 
+  useEffect(() => {
+    setFormData(node.data as unknown as WorkflowNodeData);
+  }, [node.data, node.id]);
+
   const handleChange = (field: string, value: string | FormField[] | ConditionalRoute[]) => {
     const newData = { ...formData, [field]: value };
     setFormData(newData);
