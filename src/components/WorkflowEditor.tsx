@@ -35,7 +35,7 @@ import { Save, X, Plus, Trash2, AlertCircle, Info } from 'lucide-react';
 import { StartNode } from './nodes/StartNode';
 import { FormNode, FormField } from './nodes/FormNode';
 import { ConditionalNode, ConditionalRoute, ConditionalOperator } from './nodes/ConditionalNode';
-import { ApiNode, HttpMethod } from './nodes/ApiNode';
+import { ApiNode } from './nodes/ApiNode';
 import { EndNode } from './nodes/EndNode';
 import { BlockPanel } from './BlockPanel';
 
@@ -44,6 +44,9 @@ import type { ApiNodeData } from './nodes/ApiNode';
 import type { ConditionalNodeData } from './nodes/ConditionalNode';
 import type { StartNodeData } from './nodes/StartNode';
 import type { EndNodeData } from './nodes/EndNode';
+import { FieldValidationResult, validateWorkflow, ValidationError } from '@/utils/validation';
+import { useAutoSave } from '@/hooks/useAutoSave';
+import { SaveStatus } from './SaveStatus';
 
 const nodeTypes = {
   start: StartNode,
@@ -103,48 +106,59 @@ export type WorkflowNodeData =
   | EndNodeData;
 
 /**
- * Validation error structure
- */
-export interface ValidationError {
-  id: string;
-  type: 'error';
-  message: string;
-  nodeId?: string;
-}
-
-/**
  * WorkflowEditor - Main component for building and editing workflows
  * Provides a visual canvas for creating workflows with nodes and connections
  */
 export const WorkflowEditor: React.FC = () => {
   const [nodes, setNodes, onNodesChange] = useNodesState(initialNodes);
   const [edges, setEdges, onEdgesChange] = useEdgesState(initialEdges);
-  const [showSaveDialog, setShowSaveDialog] = useState(false);
-  const [workflowErrors, setWorkflowErrors] = useState<string[]>([]);
   const [selectedNode, setSelectedNode] = useState<Node | null>(null);
+  const [isEditingNode, setIsEditingNode] = useState(false);
+
+  const [validationErrors, setValidationErrors] = useState<ValidationError[]>([]);
+  const [nodeValidationErrors, setNodeValidationErrors] = useState<
+    Record<string, FieldValidationResult[]>
+  >({});
+
+  const [showSaveDialog, setShowSaveDialog] = useState(false);
+  const [showRestoreDialog, setShowRestoreDialog] = useState(false);
+  const { saveState, lastSaved, hasSavedData, getSavedData, clearSavedData } = useAutoSave(
+    nodes,
+    edges
+  );
+
   const reactFlowInstance = useRef<ReactFlowInstance | null>(null);
 
-  // Static validation errors for demonstration
-  const validationErrors: ValidationError[] = [
-    {
-      id: '1',
-      type: 'error',
-      message: 'Workflow must have exactly one Start block',
-      nodeId: undefined,
-    },
-    {
-      id: '2',
-      type: 'error',
-      message: 'Form block "User Info" has no fields configured',
-      nodeId: 'node_1',
-    },
-    {
-      id: '3',
-      type: 'error',
-      message: 'Conditional block has no connections',
-      nodeId: 'node_2',
-    },
-  ];
+  // validate workflow on nodes or edges change (debounced)
+  useEffect(() => {
+    const timeout = setTimeout(() => {
+      console.log('Validating workflow...');
+      const validationResult = validateWorkflow(nodes, edges);
+      setValidationErrors(validationResult.errors);
+
+      const nodeErrors: Record<string, FieldValidationResult[]> = {};
+      validationResult.nodeResults.forEach((result) => {
+        if (!result.isValid) {
+          // nodeErrors[result.nodeId] = result.errors.map((e) => e.error || '');
+          nodeErrors[result.nodeId] = result.errors;
+        }
+      });
+
+      setNodeValidationErrors(nodeErrors);
+    }, 1000); // 1s debounce for validation
+
+    return () => clearTimeout(timeout);
+  }, [nodes, edges]);
+
+  const isWorkflowValid = validationErrors.length === 0;
+
+  // trigger dialog to restore saved workflow if available
+  useEffect(() => {
+    console.log('Checking for saved workflow data...');
+    if (hasSavedData && nodes.length === 0) {
+      setShowRestoreDialog(true);
+    }
+  }, [hasSavedData, nodes.length]);
 
   const onConnect = useCallback(
     (params: Connection) => {
@@ -153,7 +167,7 @@ export const WorkflowEditor: React.FC = () => {
 
       let label = '';
       if (sourceNode?.type === 'conditional' && params.sourceHandle) {
-        const conditionalData = sourceNode.data as ConditionalNodeData;
+        const conditionalData = sourceNode.data as unknown as ConditionalNodeData;
         // Find the route label for this handle
         const route = conditionalData.routes?.find((r) => r.id === params.sourceHandle);
         label = route?.label || params.sourceHandle || '';
@@ -170,6 +184,7 @@ export const WorkflowEditor: React.FC = () => {
       return;
     }
     setSelectedNode(node);
+    setIsEditingNode(true);
   }, []);
 
   const updateNodeData = useCallback(
@@ -185,6 +200,7 @@ export const WorkflowEditor: React.FC = () => {
 
   const closeEditor = useCallback(() => {
     setSelectedNode(null);
+    setIsEditingNode(false);
   }, []);
 
   const deleteNode = useCallback(
@@ -198,6 +214,8 @@ export const WorkflowEditor: React.FC = () => {
 
   // Keyboard shortcuts for deleting selected node
   useEffect(() => {
+    if (isEditingNode) return;
+
     const handleKeyDown = (event: KeyboardEvent) => {
       if ((event.key === 'Delete' || event.key === 'Backspace') && selectedNode) {
         // Prevent default behavior (like navigating back) when deleting
@@ -208,7 +226,7 @@ export const WorkflowEditor: React.FC = () => {
 
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [selectedNode, deleteNode]);
+  }, [selectedNode, deleteNode, isEditingNode]);
 
   const handleAddBlock = useCallback(
     (blockType: string) => {
@@ -278,13 +296,55 @@ export const WorkflowEditor: React.FC = () => {
     setShowSaveDialog(true);
   };
 
+  const handleRestoreWorkflow = useCallback(() => {
+    const savedData = getSavedData();
+
+    if (savedData) {
+      // Add delete handlers to restored nodes
+      const nodesWithHandlers = savedData.nodes.map((node) => ({
+        ...node,
+        data: {
+          ...node.data,
+          onDelete: () => deleteNode(node.id),
+        },
+      }));
+
+      setNodes(nodesWithHandlers);
+      setEdges(savedData.edges);
+
+      // update node ID counter to avoid conflicts
+      const maxId = Math.max(
+        ...savedData.nodes.map((n) => {
+          const match = n.id.match(/node_(\d+)/);
+          return match ? parseInt(match[1], 10) : 0;
+        }),
+        0
+      );
+
+      nodeId = maxId + 1;
+    }
+
+    setShowRestoreDialog(false);
+  }, [getSavedData, setNodes, setEdges, deleteNode]);
+
+  const handleDiscardSavedData = useCallback(() => {
+    clearSavedData();
+    setShowRestoreDialog(false);
+  }, [clearSavedData]);
+
   return (
     <Flex minHeight="100vh" direction="column" style={{ width: '100%' }}>
       <Card m="4" mb="0">
         <Flex flexGrow="1" justify="between" align="center">
           <Heading as="h2">Workflow Editor</Heading>
 
-          <Button onClick={handleSave}>
+          <SaveStatus saveState={saveState} lastSaved={lastSaved} />
+
+          <Button
+            onClick={handleSave}
+            disabled={!isWorkflowValid}
+            color={!isWorkflowValid ? 'gray' : undefined}
+          >
             <Save size={16} />
             Save Workflow
           </Button>
@@ -302,14 +362,6 @@ export const WorkflowEditor: React.FC = () => {
         {/* Workflow Canvas */}
         <Box flexGrow="1" style={{ minHeight: '600px' }}>
           <Card style={{ overflow: 'hidden', height: '100%' }}>
-            {workflowErrors.length > 0 && (
-              <Callout.Root color="red" size="1" mb="2">
-                <Callout.Icon>
-                  <AlertCircle />
-                </Callout.Icon>
-                <Callout.Text>Workflow Errors: {workflowErrors.join(', ')}</Callout.Text>
-              </Callout.Root>
-            )}
             <ReactFlow
               nodes={nodes}
               edges={edges}
@@ -366,6 +418,7 @@ export const WorkflowEditor: React.FC = () => {
             onUpdate={updateNodeData}
             onClose={closeEditor}
             onDelete={deleteNode}
+            validationErrors={nodeValidationErrors[selectedNode.id] || []}
           />
         )}
       </Flex>
@@ -386,6 +439,26 @@ export const WorkflowEditor: React.FC = () => {
           </Flex>
         </AlertDialog.Content>
       </AlertDialog.Root>
+
+      <AlertDialog.Root open={showRestoreDialog} onOpenChange={setShowRestoreDialog}>
+        <AlertDialog.Content maxWidth="450px">
+          <AlertDialog.Title>Restore Saved Workflow</AlertDialog.Title>
+          <AlertDialog.Description size="2">
+            We found a previously saved workflow, Would you like to restore it or start with a blank
+            canvas?
+          </AlertDialog.Description>
+          <Flex gap="3" mt="4" justify="end">
+            <AlertDialog.Cancel>
+              <Button variant="soft" color="gray" onClick={handleDiscardSavedData}>
+                Start Fresh
+              </Button>
+            </AlertDialog.Cancel>
+            <AlertDialog.Action>
+              <Button onClick={handleRestoreWorkflow}>Restore Workflow</Button>
+            </AlertDialog.Action>
+          </Flex>
+        </AlertDialog.Content>
+      </AlertDialog.Root>
     </Flex>
   );
 };
@@ -398,14 +471,23 @@ export interface NodeEditorProps {
   onUpdate: (nodeId: string, data: Partial<WorkflowNodeData>) => void;
   onClose: () => void;
   onDelete: (nodeId: string) => void;
+  validationErrors?: FieldValidationResult[];
 }
 
 /**
  * NodeEditor - Configuration panel for editing node properties
  * Displays different fields based on the node type
  */
-export const NodeEditor: React.FC<NodeEditorProps> = ({ node, onUpdate, onClose, onDelete }) => {
-  const [formData, setFormData] = useState<WorkflowNodeData>(node.data as WorkflowNodeData);
+export const NodeEditor: React.FC<NodeEditorProps> = ({
+  node,
+  onUpdate,
+  onClose,
+  onDelete,
+  validationErrors = [],
+}) => {
+  const [formData, setFormData] = useState<WorkflowNodeData>(
+    node.data as unknown as WorkflowNodeData
+  );
 
   const handleChange = (field: string, value: string | FormField[] | ConditionalRoute[]) => {
     const newData = { ...formData, [field]: value };
@@ -421,7 +503,7 @@ export const NodeEditor: React.FC<NodeEditorProps> = ({ node, onUpdate, onClose,
       type: 'string' as const,
       required: false,
     };
-    const newFields = [...(formData.fields || []), newField];
+    const newFields = [...('fields' in formData ? formData.fields || [] : []), newField];
     handleChange('fields', newFields);
   };
 
@@ -477,6 +559,26 @@ export const NodeEditor: React.FC<NodeEditorProps> = ({ node, onUpdate, onClose,
     handleChange('fields', newFields);
   };
 
+  const FieldError: React.FC<{ field: string }> = ({ field }) => {
+    const fieldErrors = validationErrors.filter((err) => err.field === field);
+
+    if (fieldErrors.length === 0) return null;
+
+    return fieldErrors.map((field, index) => (
+      <Text
+        key={`${field.field}-${index}`}
+        size="1"
+        color="red"
+        mt="1"
+        as="div"
+        style={{ whiteSpace: 'pre-line' }}
+      >
+        <AlertCircle size={12} style={{ display: 'inline', marginRight: '4px' }} />
+        {field.error}
+      </Text>
+    ));
+  };
+
   return (
     <Card style={{ width: '350px', height: '100%', position: 'relative', overflowY: 'auto' }}>
       <Flex direction="column" gap="4" p="4">
@@ -497,6 +599,17 @@ export const NodeEditor: React.FC<NodeEditorProps> = ({ node, onUpdate, onClose,
             </IconButton>
           </Flex>
         </Flex>
+        {/* 
+        {validationErrors.length > 0 && (
+          <Callout.Root color="red" size="1">
+            <Callout.Icon>
+              <AlertCircle />
+            </Callout.Icon>
+            <Callout.Text style={{ whiteSpace: 'pre-line' }}>
+              {`Validation Errors:\n${validationErrors.map((error) => `• ${error}`).join('\n')}`}
+            </Callout.Text>
+          </Callout.Root>
+        )} */}
 
         {node.type === 'form' && (
           <Flex direction="column" gap="4">
@@ -509,6 +622,7 @@ export const NodeEditor: React.FC<NodeEditorProps> = ({ node, onUpdate, onClose,
                 onChange={(e) => handleChange('customName', e.target.value)}
                 placeholder="Enter form name"
               />
+              <FieldError field="customName" />
             </Box>
 
             <Separator size="4" />
@@ -554,6 +668,7 @@ export const NodeEditor: React.FC<NodeEditorProps> = ({ node, onUpdate, onClose,
                       onChange={(e) => updateField(field.id, 'name', e.target.value)}
                       placeholder="field_name"
                     />
+                    <FieldError field={`fields.${index}.name`} />
                   </Box>
 
                   <Box>
@@ -566,6 +681,7 @@ export const NodeEditor: React.FC<NodeEditorProps> = ({ node, onUpdate, onClose,
                       onChange={(e) => updateField(field.id, 'label', e.target.value)}
                       placeholder="Display Label"
                     />
+                    <FieldError field={`fields.${index}.label`} />
                   </Box>
 
                   <Box>
@@ -660,6 +776,7 @@ export const NodeEditor: React.FC<NodeEditorProps> = ({ node, onUpdate, onClose,
                 onChange={(e) => handleChange('url', e.target.value)}
                 placeholder="https://api.example.com"
               />
+              <FieldError field="url" />
             </Box>
             <Box>
               <Text size="2" weight="medium" mb="2">
@@ -677,6 +794,7 @@ export const NodeEditor: React.FC<NodeEditorProps> = ({ node, onUpdate, onClose,
                   <Select.Item value="DELETE">DELETE</Select.Item>
                 </Select.Content>
               </Select.Root>
+              <FieldError field="method" />
             </Box>
           </Flex>
         )}
@@ -692,6 +810,7 @@ export const NodeEditor: React.FC<NodeEditorProps> = ({ node, onUpdate, onClose,
                 onChange={(e) => handleChange('customName', e.target.value)}
                 placeholder="Enter condition name"
               />
+              <FieldError field="customName" />
             </Box>
             <Box>
               <Text size="2" weight="medium" mb="2">
@@ -702,6 +821,7 @@ export const NodeEditor: React.FC<NodeEditorProps> = ({ node, onUpdate, onClose,
                 onChange={(e) => handleChange('fieldToEvaluate', e.target.value)}
                 placeholder="field_name"
               />
+              <FieldError field="fieldToEvaluate" />
             </Box>
             <Box>
               <Text size="2" weight="medium" mb="2">
@@ -721,6 +841,7 @@ export const NodeEditor: React.FC<NodeEditorProps> = ({ node, onUpdate, onClose,
                   <Select.Item value="contains">Contains</Select.Item>
                 </Select.Content>
               </Select.Root>
+              <FieldError field="operator" />
             </Box>
             <Box>
               <Text size="2" weight="medium" mb="2">
@@ -731,6 +852,7 @@ export const NodeEditor: React.FC<NodeEditorProps> = ({ node, onUpdate, onClose,
                 onChange={(e) => handleChange('value', e.target.value)}
                 placeholder="comparison value"
               />
+              <FieldError field="value" />
             </Box>
 
             <Separator size="4" />
@@ -835,21 +957,17 @@ export const ValidationPanel: React.FC<ValidationPanelProps> = ({ errors }) => {
               <Callout.Text>No errors found</Callout.Text>
             </Callout.Root>
           ) : (
-            errors.map((error) => (
-              <Callout.Root key={error.id} color="red" size="1">
+            errors.map((error, index) => (
+              <Callout.Root key={index} color="red" size="1">
                 <Callout.Icon>
                   <AlertCircle />
                 </Callout.Icon>
                 <Callout.Text>
                   {error.message}
-                  {error.nodeId && (
-                    <>
-                      <br />
-                      <Text size="1" color="gray">
-                        Node: {error.nodeId}
-                      </Text>
-                    </>
-                  )}
+                  <br />
+                  <Text size="1" color="gray">
+                    {error.nodeId && `Node: ${error.nodeId}`}
+                  </Text>
                 </Callout.Text>
               </Callout.Root>
             ))
