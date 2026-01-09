@@ -1,7 +1,7 @@
 import { ApiNodeData } from '@/components/nodes/ApiNode';
 import { ConditionalNodeData } from '@/components/nodes/ConditionalNode';
 import { FormNodeData } from '@/components/nodes/FormNode';
-import { WorkflowNodeData } from '@/components/WorkflowEditor';
+import { NodeType, WorkflowNodeData } from '@/types';
 import { Edge, Node } from '@xyflow/react';
 
 import { z } from 'zod';
@@ -34,8 +34,6 @@ export interface WorkflowValidationResult {
   errors: ValidationError[];
   nodeResults: NodeValidationResult[];
 }
-
-type NodeType = 'start' | 'form' | 'conditional' | 'api' | 'end';
 
 /** BASE SCHEMA */
 export const BaseNodeSchema = z.object({
