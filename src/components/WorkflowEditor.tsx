@@ -14,7 +14,7 @@ import {
 } from '@xyflow/react';
 import '@xyflow/react/dist/style.css';
 
-import { Box, Button, Card, Flex, Heading, AlertDialog } from '@radix-ui/themes';
+import { Box, Button, Card, Flex, Heading } from '@radix-ui/themes';
 import { Save } from 'lucide-react';
 
 import { StartNode } from './nodes/StartNode';
@@ -25,12 +25,13 @@ import { EndNode } from './nodes/EndNode';
 import { BlockPanel } from './BlockPanel';
 
 import type { ConditionalNodeData } from './nodes/ConditionalNode';
-import { useAutoSave } from '@/hooks/useAutoSave';
 import { useValidation } from '@/hooks/useValidation';
+import { useSaveRestoreWorkflow } from '@/hooks/useSaveRestoreWorkflow';
 import { SaveStatus } from './SaveStatus';
 import { WorkflowNodeData } from '@/types';
 import { NodeEditor } from './nodeEditor/NodeEditor';
 import { ValidationPanel } from './ValidationPanel';
+import { WorkflowDialogs } from './WorkflowDialogs';
 
 const nodeTypes = {
   start: StartNode,
@@ -91,22 +92,19 @@ export const WorkflowEditor: React.FC = () => {
 
   const { validationErrors, nodeValidationErrors, isWorkflowValid } = useValidation(nodes, edges);
 
-  const [showSaveDialog, setShowSaveDialog] = useState(false);
-  const [showRestoreDialog, setShowRestoreDialog] = useState(false);
-  const { saveState, lastSaved, hasSavedData, getSavedData, clearSavedData } = useAutoSave(
-    nodes,
-    edges
-  );
+  const {
+    saveState,
+    lastSaved,
+    showSaveDialog,
+    showRestoreDialog,
+    setShowSaveDialog,
+    setShowRestoreDialog,
+    handleSave,
+    handleRestoreWorkflow,
+    handleDiscardSavedData,
+  } = useSaveRestoreWorkflow(nodes, edges);
 
   const reactFlowInstance = useRef<ReactFlowInstance | null>(null);
-
-  // trigger dialog to restore saved workflow if available
-  useEffect(() => {
-    console.log('Checking for saved workflow data...');
-    if (hasSavedData && nodes.length === 0) {
-      setShowRestoreDialog(true);
-    }
-  }, [hasSavedData, nodes.length]);
 
   const onConnect = useCallback(
     (params: Connection) => {
@@ -218,34 +216,8 @@ export const WorkflowEditor: React.FC = () => {
     reactFlowInstance.current = instance;
   }, []);
 
-  const handleSave = () => {
-    const workflowConfig = {
-      nodes: nodes.map((node) => ({
-        id: node.id,
-        type: node.type,
-        position: node.position,
-        data: node.data,
-      })),
-      edges: edges.map((edge) => ({
-        id: edge.id,
-        source: edge.source,
-        target: edge.target,
-        label: edge.label,
-      })),
-      metadata: {
-        name: 'Sample Workflow',
-        version: '1.0.0',
-        created: new Date().toISOString(),
-      },
-    };
-
-    console.log('Workflow Configuration:', JSON.stringify(workflowConfig, null, 2));
-
-    setShowSaveDialog(true);
-  };
-
-  const handleRestoreWorkflow = useCallback(() => {
-    const savedData = getSavedData();
+  const onRestoreWorkflow = useCallback(() => {
+    const savedData = handleRestoreWorkflow();
 
     if (savedData) {
       // Add delete handlers to restored nodes
@@ -271,14 +243,7 @@ export const WorkflowEditor: React.FC = () => {
 
       nodeId = maxId + 1;
     }
-
-    setShowRestoreDialog(false);
-  }, [getSavedData, setNodes, setEdges, deleteNode]);
-
-  const handleDiscardSavedData = useCallback(() => {
-    clearSavedData();
-    setShowRestoreDialog(false);
-  }, [clearSavedData]);
+  }, [handleRestoreWorkflow, setNodes, setEdges, deleteNode]);
 
   return (
     <Flex minHeight="100vh" direction="column" style={{ width: '100%' }}>
@@ -371,42 +336,15 @@ export const WorkflowEditor: React.FC = () => {
         )}
       </Flex>
 
-      <AlertDialog.Root open={showSaveDialog} onOpenChange={setShowSaveDialog}>
-        <AlertDialog.Content maxWidth="450px">
-          <AlertDialog.Title>Workflow Saved</AlertDialog.Title>
-          <AlertDialog.Description size="2">
-            Your workflow configuration has been saved to the browser console. Check the developer
-            console for the complete configuration details.
-          </AlertDialog.Description>
-          <Flex gap="3" mt="4" justify="end">
-            <AlertDialog.Cancel>
-              <Button variant="soft" color="gray">
-                Close
-              </Button>
-            </AlertDialog.Cancel>
-          </Flex>
-        </AlertDialog.Content>
-      </AlertDialog.Root>
-
-      <AlertDialog.Root open={showRestoreDialog} onOpenChange={setShowRestoreDialog}>
-        <AlertDialog.Content maxWidth="450px">
-          <AlertDialog.Title>Restore Saved Workflow</AlertDialog.Title>
-          <AlertDialog.Description size="2">
-            We found a previously saved workflow, Would you like to restore it or start with a blank
-            canvas?
-          </AlertDialog.Description>
-          <Flex gap="3" mt="4" justify="end">
-            <AlertDialog.Cancel>
-              <Button variant="soft" color="gray" onClick={handleDiscardSavedData}>
-                Start Fresh
-              </Button>
-            </AlertDialog.Cancel>
-            <AlertDialog.Action>
-              <Button onClick={handleRestoreWorkflow}>Restore Workflow</Button>
-            </AlertDialog.Action>
-          </Flex>
-        </AlertDialog.Content>
-      </AlertDialog.Root>
+      {/* Save and Restore Dialogs */}
+      <WorkflowDialogs
+        showSaveDialog={showSaveDialog}
+        showRestoreDialog={showRestoreDialog}
+        onSaveDialogChange={setShowSaveDialog}
+        onRestoreDialogChange={setShowRestoreDialog}
+        onRestoreWorkflow={onRestoreWorkflow}
+        onDiscardSavedData={handleDiscardSavedData}
+      />
     </Flex>
   );
 };
