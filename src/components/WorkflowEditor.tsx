@@ -25,8 +25,8 @@ import { EndNode } from './nodes/EndNode';
 import { BlockPanel } from './BlockPanel';
 
 import type { ConditionalNodeData } from './nodes/ConditionalNode';
-import { FieldValidationResult, validateWorkflow, ValidationError } from '@/utils/validation';
 import { useAutoSave } from '@/hooks/useAutoSave';
+import { useValidation } from '@/hooks/useValidation';
 import { SaveStatus } from './SaveStatus';
 import { WorkflowNodeData } from '@/types';
 import { NodeEditor } from './nodeEditor/NodeEditor';
@@ -89,10 +89,7 @@ export const WorkflowEditor: React.FC = () => {
   const [selectedNode, setSelectedNode] = useState<Node | null>(null);
   const [isEditingNode, setIsEditingNode] = useState(false);
 
-  const [validationErrors, setValidationErrors] = useState<ValidationError[]>([]);
-  const [nodeValidationErrors, setNodeValidationErrors] = useState<
-    Record<string, FieldValidationResult[]>
-  >({});
+  const { validationErrors, nodeValidationErrors, isWorkflowValid } = useValidation(nodes, edges);
 
   const [showSaveDialog, setShowSaveDialog] = useState(false);
   const [showRestoreDialog, setShowRestoreDialog] = useState(false);
@@ -102,29 +99,6 @@ export const WorkflowEditor: React.FC = () => {
   );
 
   const reactFlowInstance = useRef<ReactFlowInstance | null>(null);
-
-  // validate workflow on nodes or edges change (debounced)
-  useEffect(() => {
-    const timeout = setTimeout(() => {
-      console.log('Validating workflow...');
-      const validationResult = validateWorkflow(nodes, edges);
-      setValidationErrors(validationResult.errors);
-
-      const nodeErrors: Record<string, FieldValidationResult[]> = {};
-      validationResult.nodeResults.forEach((result) => {
-        if (!result.isValid) {
-          // nodeErrors[result.nodeId] = result.errors.map((e) => e.error || '');
-          nodeErrors[result.nodeId] = result.errors;
-        }
-      });
-
-      setNodeValidationErrors(nodeErrors);
-    }, 1000); // 1s debounce for validation
-
-    return () => clearTimeout(timeout);
-  }, [nodes, edges]);
-
-  const isWorkflowValid = validationErrors.length === 0;
 
   // trigger dialog to restore saved workflow if available
   useEffect(() => {
